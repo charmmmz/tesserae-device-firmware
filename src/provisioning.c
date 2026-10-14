@@ -6,6 +6,7 @@
 #include "relay.h"       /* RELAY_DEFAULT_URL */
 #include "rest_config.h"
 #include "wifi_manager.h"
+#include "memory_diag.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -1017,6 +1018,7 @@ void provisioning_begin(void)
 
     ESP_LOGI(TAG, "captive portal up; %ds idle timeout (resets on each STA join)",
              PROVISION_PORTAL_TIMEOUT_S);
+    memory_diag("portal ready");
 }
 
 provisioning_result_t provisioning_serve(void)
@@ -1056,6 +1058,7 @@ provisioning_result_t provisioning_serve(void)
     if (s_httpd)    { httpd_stop(s_httpd);     s_httpd = NULL; }
     esp_wifi_stop();
     epd_light_sleep_set_wifi(false);
+    memory_diag("portal stopped");
 
     provisioning_result_t result = PROVISIONING_RESULT_TIMEOUT;
     if (bits & BIT_CREDS_SAVED) result = PROVISIONING_RESULT_SAVED;

@@ -73,8 +73,8 @@ static void ble_switch_button_task(void *arg)
         if (buttons_maintenance_is_pressed()) {
             held_ms += 50;
             if (held_ms >= BLE_MAINTENANCE_HOLD_S * 1000) {
-                ESP_LOGI(TAG, "Refresh held for %d s; requesting BLE setup",
-                         BLE_MAINTENANCE_HOLD_S);
+                /* Formatted logging (including the capture hook) can overflow
+                 * this 2 KB task. Let the main-task consumer log the request. */
                 xEventGroupSetBits(s_done, BIT_BLE_REQUESTED);
                 while (1) vTaskDelay(pdMS_TO_TICKS(1000));
             }
@@ -1041,6 +1041,12 @@ provisioning_result_t provisioning_serve(void)
      * down. A BLE switch tears it down immediately so the next radio mode can
      * start without competing with the SoftAP. */
     if (bits & BIT_CREDS_SAVED) vTaskDelay(pdMS_TO_TICKS(500));
+
+    if (bits & BIT_BLE_REQUESTED) {
+        ESP_LOGI(TAG, "Refresh held for %d s; requesting BLE setup (button stack min=%u)",
+                 BLE_MAINTENANCE_HOLD_S,
+                 s_button_task ? (unsigned)uxTaskGetStackHighWaterMark(s_button_task) : 0);
+    }
 
     idle_tracker_uninstall();
 

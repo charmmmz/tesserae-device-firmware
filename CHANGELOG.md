@@ -27,6 +27,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the rect holds. For telling a masking fault from a wrong rect on glass
   (#39). The default build is unchanged.
 
+### Fixed
+
+- Holding Refresh to switch from Wi-Fi setup to Bluetooth no longer formats
+  log messages on the small button-monitor task, avoiding its stack overflow
+  on reTerminal E1003 with log capture enabled.
+
 ## [1.47.0] - 2026-10-11
 
 ### Added

@@ -8,12 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Opt-in Bluetooth Photo v2 development envs for Seeed E1004, E1001 and Sticky:
+- Opt-in Bluetooth Photo v2 development envs for Seeed E1004, E1001, Sticky
+  and E1003 (1872×1404, 16-level gray, 1,314,144-byte full frame):
   authenticated Maintenance authorizes a persistent manual mode, button wakes
   open bounded encrypted photo sessions, and validated full frames paint after
   BLE shuts down. Manual mode pauses automatic server updates until explicitly
   returned to Automatic. Normal release envs remain unchanged; hardware
   acceptance is pending. See `docs/ble-photo-v2.md`.
+
+### Fixed
+
+- Bluetooth Photo experimental envs now disable OTA capability, including when
+  switched to Automatic, so regular server updates cannot replace a build
+  under test. Normal release targets retain OTA.
+- Manual photo sleep parks the touch controller without arming touch wake,
+  including E1003's permanently powered GT911.
 
 ## [1.52.0] - 2026-10-21
 

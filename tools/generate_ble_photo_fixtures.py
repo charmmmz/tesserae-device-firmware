@@ -26,6 +26,8 @@ def main():
          bytes([0x00])*50 + bytes([0xff])*50),
         ("sticky", "seeed_reterminal_sticky", 480, 800, "gray2-msb", 2,
          bytes([0x00])*30 + bytes([0x55])*30 + bytes([0xaa])*30 + bytes([0xff])*30),
+        ("e1003", "seeed_reterminal_e1003", 1872, 1404, "gray4-msb", 4,
+         bytes(((2*x)//117 << 4) | ((2*x+1)//117) for x in range(936))),
     ]
     for name, kind, width, height, fmt, bpp, row in cases:
         cap = descriptor(kind, width, height, fmt, bpp)

@@ -20,7 +20,7 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
     "$mbedtls/library/sha256.c" "$mbedtls/library/platform_util.c" \
     "$mbedtls/library/constant_time.c" -o "$out/fixture"
 python3 tools/generate_ble_photo_fixtures.py "$out/fixtures"
-for profile in e1004 e1001 sticky; do
+for profile in e1004 e1001 sticky e1003; do
     cmp "$out/fixtures/$profile.capabilities.json" "test/fixtures/ble_photo/$profile.capabilities.json"
     cmp "$out/fixtures/$profile.sha256" "test/fixtures/ble_photo/$profile.sha256"
     "$out/fixture" "$out/fixtures/$profile.bin" "$(cat "$out/fixtures/$profile.sha256")"

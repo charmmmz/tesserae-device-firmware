@@ -1361,6 +1361,11 @@ static void manual_photo_sleep(void)
     deck_pre_sleep();
     led_prepare_sleep();
     sleep_park_rails();
+#if BOARD_HAS_TOUCH
+    /* Manual photos have no touch interaction/wake. On E1003 the permanently
+     * powered GT911 must be parked even when normal touch init was skipped. */
+    touch_park_idle();
+#endif
     buttons_arm_ext1();
     esp_sleep_enable_timer_wakeup(24ULL * 60 * 60 * 1000000);
     power_latch_hold_through_sleep();

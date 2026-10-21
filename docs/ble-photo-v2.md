@@ -4,6 +4,13 @@ This is a local development implementation, disabled in normal release builds.
 It has host and build validation; BLE timing, power use and physical panel
 output still require hardware acceptance. It does not require server pairing.
 
+All four `-ble-photo` envs explicitly disable `TESSERAE_OTA_CAPABILITY_ENABLED`,
+so ordinary server OTA cannot replace an experimental image even after
+switching its screen mode back to Automatic. They remain absent from release
+matrices and reuse the normal board kind only for pixel/device identity.
+Returning to a normal OTA-enabled firmware requires an explicit reflash.
+Normal envs retain their existing OTA capability and release behavior.
+
 ## User flow and lifetime
 
 1. Hold Refresh for 3–19 seconds and release to open Maintenance. Authenticate
@@ -35,6 +42,11 @@ advertising nor Wi-Fi, and wakes daily for a battery check or on a physical
 button. Existing low-battery goodbye/recovery uses its hourly recheck; a photo
 begin is refused for a known battery below 3450 mV. Unknown/mains readings retain
 existing behavior. Holding Refresh for 20 seconds retains factory reset.
+Manual mode has no touch-based photo entry or touch wake. Its sleep path calls
+the existing `touch_park_idle()` on touch boards: this initializes the E1003's
+permanently powered GT911 if necessary, then commands sleep, so skipping normal
+touch initialization cannot leave it scanning for the entire manual sleep.
+Buttons and the daily battery timer remain the wake sources.
 
 The mode and authorization survive reboot. A received frame is held in RAM
 until painting, not saved as a photo file: boot, Maintenance and battery
@@ -101,6 +113,7 @@ buffer geometry, not inferred from the phone's hardware catalog:
 | `seeed-reterminal-e1004-ble-photo` | `seeed_reterminal_e1004` | 1200 × 1600 | `spectra6-msb` | 600 | 960000 |
 | `seeed-reterminal-e1001-ble-photo` | `seeed_reterminal_e1001` | 800 × 480 | `mono1-msb` | 100 | 48000 |
 | `seeed-reterminal-sticky-ble-photo` | `seeed_reterminal_sticky` | 480 × 800 | `gray2-msb` | 120 | 96000 |
+| `seeed-reterminal-e1003-ble-photo` | `seeed_reterminal_e1003` | 1872 × 1404 | `gray4-msb` | 936 | 1314144 |
 
 Example exact E1004 descriptor (minified size is under the 512-byte control
 message limit):
@@ -111,7 +124,7 @@ message limit):
 
 Rows are top to bottom. The left pixel occupies the most significant bit(s) or
 nibble; row stride is exactly `ceil(width*bpp/8)`. The visible rectangle is the
-entire buffer on these three boards, with `x_offset=0`. Maximum frame is 4 MiB.
+entire buffer on these four boards, with `x_offset=0`. Maximum frame is 4 MiB.
 The format IDs reserved by the shared contract are:
 
 | Format | Bits/pixel | Codes |
@@ -123,9 +136,26 @@ The format IDs reserved by the shared contract are:
 | `spectra6-msb` | 4 | 0 black, 1 white, 2 yellow, 3 red, 5 blue, 6 green |
 | `acep7-msb` | 4 | 0 black, 1 white, 2 green, 3 blue, 4 red, 5 yellow, 6 orange |
 
-Only the three profiled formats are enabled by this firmware iteration. Other
+Only the four profiled formats are enabled by this firmware iteration. Other
 hardware must supply verified driver geometry/color codes and pass physical
 tests before the feature gate is widened.
+
+E1003's `gray4-msb` frame is in normal display coordinates: nibble 0 is black,
+15 is white, even columns use the high nibble and odd columns the low nibble.
+The unchanged IT8951 full-frame path compensates for the ED103TC2 glass's
+physical X mirror inside `stream_row`: it reverses row bytes and swaps their
+nibbles once, with `EPD_IT8951_MIRROR_X=1`. `ENDIAN_B` is SPI word order, not an
+additional image flip. The phone encoder and BLE receiver must not pre-mirror,
+rotate or swap nibbles; rows remain top to bottom. The photo path calls the same
+`epd_display_frame`/full driver used by ordinary frames, without overlay or
+partial refresh composition.
+
+The E1003 experiment inherits its ordinary target's
+`sdkconfig.e1003-memory.defaults` external-BSS placement, icon font, partitions,
+SPI clocks, panel/rail behavior and `--no-stub` upload setting. It changes only
+the photo feature and OTA capability build flags. See
+[E1003 memory validation](e1003-memory-validation.md) for the established memory
+and flashing constraints; this addition does not redo those hardware results.
 
 `digest` is lowercase SHA-256 of the following canonical UTF-8 sequence with
 decimal integers, pipe separators, no escaping, trailing pipe or newline:
@@ -177,8 +207,8 @@ From the repository root:
 sh tools/test_ble_photo.sh
 sh tools/test_ble_setup_protocol.sh
 python3 tools/generate_ble_photo_fixtures.py /tmp/photo-v2-fixtures
-pio run -e seeed-reterminal-e1004-ble-photo -e seeed-reterminal-e1001-ble-photo -e seeed-reterminal-sticky-ble-photo
-pio run -e seeed-reterminal-e1004 -e waveshare-133e6
+pio run -e seeed-reterminal-e1003-ble-photo -e seeed-reterminal-e1004-ble-photo -e seeed-reterminal-e1001-ble-photo -e seeed-reterminal-sticky-ble-photo
+pio run -e seeed-reterminal-e1003 -e seeed-reterminal-e1004 -e waveshare-133e6
 ```
 
 Host scripts use the installed ESP-IDF mbedTLS sources under
@@ -193,8 +223,14 @@ crypto vectors remain covered.
 Small descriptor/hash goldens are in `test/fixtures/ble_photo`; the generator
 recreates raw bars without storing large binaries in Git. E1004 bars are black,
 white, yellow, red, blue and green from left to right, repeated on every row.
-E1001 is black/white halves; Sticky is four increasing gray levels. To validate
-an independently encoded phone frame through the actual C receiver and real
+E1001 is black/white halves; Sticky is four increasing gray levels.
+E1003 has sixteen left-to-right levels, 117 pixels per bar, on all 1404 rows.
+Its odd-width bars deliberately cross nibble boundaries: pixels 116 and 117
+pack as `0x01`, not `0x10`; the first/last pixels are black/white. The frame
+SHA-256 is `32bd2387c1725cfecc1752e8a2e8d77b32e02cf1ffca725b5e9043e587548bfb`;
+the descriptor digest is
+`324dcf85431b812a6c469bd3649552b41533155ddfb2bb5f7561d5d12f7d82f6`.
+To validate an independently encoded phone frame through the actual C receiver and real
 mbedTLS SHA implementation, run:
 
 ```sh
@@ -224,32 +260,50 @@ That cross-language frame SHA-256 was
 `7e88b3db01f7e8c6b66ad4111ca47e48c891a5ff785e07fe33d3566455af2404`.
 This validates byte layout, not BLE throughput or physical color output.
 
-Local validation on 2026-10-21 used baseline
+E1003 additionally passed a 1,314,144-byte independent Swift encode of
+`(x/117 + y/78) % 16` gray levels, a full Python per-byte oracle and the C
+receiver with real mbedTLS SHA. It used 3423 logical packets, including the
+final 96-byte packet. That cross-language frame SHA-256 was
+`c1a3309bcaf1663b33c035132dfcf44faf61c154fca304f037b1c2444fb9de1b`.
+This pattern checks both axes and nibble order without pre-mirroring the image.
+
+Initial validation on 2026-10-21 used baseline
 `421d51a41a843e94757b2261aed619aad0996b66` (1.52.0), ESP-IDF 5.5.2 and
-pioarduino 55.03.37. All five envs in the commands above built successfully:
-three opt-in experimental targets, normal E1004, and BLE-disabled
-`waveshare-133e6`. Both host scripts and all three generated frame fixtures
+pioarduino 55.03.37. The E1003/OTA-isolation follow-up builds on `1c45cef`
+(the first Photo v2 implementation). All seven envs in the commands above
+built successfully: four opt-in experimental targets, normal E1003/E1004 and
+BLE-disabled `waveshare-133e6`. Both host scripts and all four frame fixtures
 passed. The build host needed Python 3.12 and PlatformIO 6.1.19; its older
 Python 3.9 installation could not run this platform. A task-local PlatformIO
 core reused the installed package cache without replacing the user's Python.
 
+Resolved PlatformIO configuration checks confirmed identical board, SDK
+defaults, partitions and embedded fonts between each normal/experimental pair,
+except the intended feature flags. Generated E1003 sdkconfig retained external
+BSS and NimBLE. Symbol inspection of the linked experimental images found no
+OTA installer/capability functions; normal E1003/E1004 retained both. This
+confirms OTA isolation beyond relying on manual mode's lack of network polls.
+
 | Successful env | Static RAM bytes | Flash bytes |
 |---|---:|---:|
-| `seeed-reterminal-e1004-ble-photo` | 92724 | 1639109 |
-| `seeed-reterminal-e1001-ble-photo` | 92740 | 1641257 |
-| `seeed-reterminal-sticky-ble-photo` | 182916 | 2229633 |
-| `seeed-reterminal-e1004` (normal BLE) | 91508 | 1632873 |
-| `waveshare-133e6` (BLE off) | 85892 | 1390393 |
+| `seeed-reterminal-e1003-ble-photo` | 97628 | 2218693 |
+| `seeed-reterminal-e1004-ble-photo` | 92636 | 1613061 |
+| `seeed-reterminal-e1001-ble-photo` | 92652 | 1615161 |
+| `seeed-reterminal-sticky-ble-photo` | 182828 | 2205061 |
+| `seeed-reterminal-e1003` (normal BLE) | 96492 | 2237225 |
+| `seeed-reterminal-e1004` (normal BLE) | 91508 | 1632893 |
+| `waveshare-133e6` (BLE off) | 85892 | 1390389 |
 
 These linker totals exclude dynamic photo buffers and do not establish runtime
-heap headroom. Local build log: `/tmp/tesserae-ble-pending-mode-builds.log`. Each
+heap headroom. Local build log: `/tmp/tesserae-e1003-ble-photo-final-builds.log`;
+host/cross-language log: `/tmp/tesserae-e1003-ble-photo-host-tests.log`. Each
 binary is at `.pio/build/<env>/firmware.bin`; build and hardware results are
 separate acceptance steps.
 
 ## Hardware acceptance still required
 
 - Run the complete Maintenance → Bluetooth authorization → disconnect/reboot →
-  short-button photo flow on all three boards, using QR and passkey for
+  short-button photo flow on all four boards, using QR and passkey for
   Maintenance. Confirm a cold photo session needs neither Wi-Fi nor server.
 - Paint color/gray/mono bars and an asymmetric orientation/corner test. Confirm
   geometry, row direction, color codes, black/white polarity and no hidden-column
@@ -264,8 +318,12 @@ separate acceptance steps.
   closing: both must return an error rather than an acceptance reply. Re-enter
   Maintenance and confirm those actions work and retain/revoke the photo key
   as specified.
-- Test low battery, charging/recovery, practical 960 KB throughput, MTU/packet
+- Test low battery, charging/recovery, practical 960 KB/1.31 MB throughput, MTU/packet
   fragmentation, RSSI/retry behavior, panel refresh current and asleep current.
+- On E1003, check the asymmetric nibble/orientation pattern and memory headroom
+  during the 1,314,144-byte receive and subsequent IT8951 paint. Offer a normal
+  server OTA while in Automatic on the experimental build: it must neither
+  advertise OTA capability nor install that image.
 
 Normal release envs do not enable this feature and must continue their existing
 setup/maintenance and automatic transport behavior. There is no flashing,

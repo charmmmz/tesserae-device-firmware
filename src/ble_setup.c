@@ -86,8 +86,9 @@ static const char *TAG = "ble_setup";
 #endif
 #define PHOTO_CHUNK_BYTES 384
 #if TESSERAE_BLE_PHOTO_ENABLED && !defined(TESSERAE_BOARD_SEEED_E1004) && \
-    !defined(TESSERAE_BOARD_SEEED_E1001) && !defined(TESSERAE_BOARD_SEEED_STICKY)
-#error "BLE Photo v2 experimental profiles: E1004, E1001, Sticky only"
+    !defined(TESSERAE_BOARD_SEEED_E1001) && !defined(TESSERAE_BOARD_SEEED_STICKY) && \
+    !defined(TESSERAE_BOARD_SEEED_E1003)
+#error "BLE Photo v2 experimental profiles: E1004, E1001, Sticky, E1003 only"
 #endif
 
 /* UUID text: 7a5e000N-7b6d-4f8b-9c2e-1d0a5a110001. NimBLE stores 128-bit
@@ -566,6 +567,9 @@ static bool prepare_photo_capabilities(void)
 #elif defined(TESSERAE_BOARD_SEEED_E1001)
     s_photo_format = "mono1-msb";
     const unsigned expected_bpp = 1;
+#elif defined(TESSERAE_BOARD_SEEED_E1003)
+    s_photo_format = "gray4-msb";
+    const unsigned expected_bpp = 4;
 #else
     s_photo_format = "gray2-msb";
     const unsigned expected_bpp = 2;

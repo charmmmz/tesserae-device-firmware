@@ -6,8 +6,9 @@ output still require hardware acceptance. It does not require server pairing.
 
 All four `-ble-photo` envs explicitly disable `TESSERAE_OTA_CAPABILITY_ENABLED`,
 so ordinary server OTA cannot replace an experimental image even after
-switching its screen mode back to Automatic. They remain absent from release
-matrices and reuse the normal board kind only for pixel/device identity.
+switching its screen mode back to Automatic. CI builds them in a separate
+compile-only matrix, without publishing release/OTA artifacts. They reuse the
+normal board kind only for pixel/device identity.
 Returning to a normal OTA-enabled firmware requires an explicit reflash.
 Normal envs retain their existing OTA capability and release behavior.
 
@@ -289,7 +290,8 @@ pio run -e seeed-reterminal-e1003-ble-photo -e seeed-reterminal-e1004-ble-photo 
 pio run -e seeed-reterminal-e1003 -e seeed-reterminal-e1004 -e waveshare-133e6
 ```
 
-Host scripts use the installed ESP-IDF mbedTLS sources under
+The photo script explicitly resolves the project-pinned ESP-IDF package first;
+it does not require a prior firmware build. Host scripts use its mbedTLS under
 `${PLATFORMIO_CORE_DIR:-$HOME/.platformio}`. Receiver/mode tests run with Address
 and Undefined Behavior Sanitizers. They cover retransmissions, wrong offsets and
 IDs, a four-packet window with lost ACKs and an oldest-packet retry,

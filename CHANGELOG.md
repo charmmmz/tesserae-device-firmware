@@ -31,6 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cumulative ACKs and raw frames. Photo notifications use bounded congestion
   retries instead of a fixed 15 ms delay; older clients retain window 1. The
   native-link security check now documents its defense-in-depth purpose.
+- CI runs the Photo v2 host regressions and compiles all four opt-in targets in
+  a separate matrix without release/OTA artifacts.
 
 ## [1.52.0] - 2026-10-21
 

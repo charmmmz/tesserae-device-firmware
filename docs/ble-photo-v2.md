@@ -49,25 +49,41 @@ touch initialization cannot leave it scanning for the entire manual sleep.
 Buttons and the daily battery timer remain the wake sources.
 
 The mode and authorization survive reboot. A received frame is held in RAM
-until painting, not saved as a photo file: boot, Maintenance and battery
-messages can replace what is physically visible. Cold boot in manual mode
-shows the instruction to press Refresh. Maintenance exit without changing mode
-keeps manual mode; it cannot silently resume server updates.
+until painting, not saved as a photo file. The entry instruction is painted
+only once after a deliberate Automatic-to-Bluetooth transition. A one-shot NVS
+flag is consumed and committed **before** drawing, so a later cold boot,
+brownout, watchdog, panic or battery recovery does not redraw that instruction
+over a retained photo. If consuming the flag fails, the device neither paints
+nor accepts a new photo on that wake; retry after recovery or enter Maintenance.
+Power loss between the consume commit and drawing may omit that one instruction;
+this at-most-once choice protects retained photos. Explicit Maintenance and
+existing critical-battery protection can still replace the physical image.
+Maintenance exit without changing mode keeps manual mode.
 
-Mode storage is one versioned NVS blob (`ble_photo/config`): version byte 1,
-mode byte 0/1, then 32 key bytes. Absent configuration means Automatic. Repeated
-Bluetooth authorization returns the same active key. Selecting Wi-Fi commits
-mode 0 with a zeroed key; the next authorization generates a new key. Clear
-Wi-Fi preserves this namespace and key. Factory reset erases them. An unreadable
-or corrupt blob fails closed, requiring Maintenance/factory-reset recovery.
-Changing mode does not erase stored server or network credentials.
+Mode storage is one versioned NVS blob (`ble_photo/config`): version byte 2,
+mode byte 0/1, 32 key bytes, then one byte `prompt_pending` (0/1). Mode, key and
+prompt are committed together. Absent configuration means Automatic. The old
+34-byte v1 blob remains readable; an existing v1 Manual configuration has no
+pending prompt, and its next successful mode write migrates it to v2. Repeated
+Bluetooth authorization preserves the active key and pending/consumed prompt.
+Selecting Wi-Fi blindly commits mode 0, a zeroed key and prompt 0, **without
+reading the old blob**. Corrupt lengths/versions/keys and read errors therefore
+cannot block explicit recovery when NVS is still writable; real write/commit
+failures are returned. Bluetooth authorization still fails closed on unreadable
+state. The next authorization after Automatic generates a new key. Clear Wi-Fi
+preserves this namespace; factory reset erases it. Changing mode does not erase
+stored server/network credentials and does not require a factory reset.
 
 ## Discovery and authentication
 
 Maintenance keeps service `7a5e0001-7b6d-4f8b-9c2e-1d0a5a110001` and existing
 setup authentication. In supported experimental builds its public info adds
 `"photo":2,"family":"tesserae","kind":"<stable catalog kind>"` and diagnostics
-adds `screen_mode`. Fresh-device setup does not offer the photo feature.
+adds `screen_mode`. On a mode read error it instead reports
+`"screen_mode_error":true`, without inventing a current mode. Companion offers
+an authenticated **Restore Automatic (Wi-Fi)** action in that state; Manual
+remains unavailable until recovery succeeds. Fresh-device setup does not offer
+the photo feature.
 
 Photo sessions use service `7a5e0008-7b6d-4f8b-9c2e-1d0a5a110001`, protocol 2,
 advertisement mode/flags byte `0x04` and the board's existing raw hardware code.

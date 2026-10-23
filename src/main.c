@@ -1412,7 +1412,7 @@ static bool apply_ble_result(ble_setup_result_t result)
 
 
 #if TESSERAE_BLE_PHOTO_ENABLED
-static bool run_manual_photo_mode(bool button_wake, bool first_boot)
+static bool run_manual_photo_mode(bool button_wake)
 {
     bool manual = false;
     uint8_t key[32];
@@ -1423,17 +1423,27 @@ static bool run_manual_photo_mode(bool button_wake, bool first_boot)
         /* Do not silently resume network updates after corrupt/unreadable
          * local authorization. Maintenance remains the recovery path. */
         ESP_LOGE(TAG, "photo mode state unreadable: %s", esp_err_to_name(err));
-        splash_show_message("Bluetooth settings unavailable",
-                            "Hold Refresh for Maintenance.");
+        manual_photo_sleep();
+        return true;
+    }
+    bool show_prompt = false;
+    err = ble_photo_mode_take_prompt(&show_prompt);
+    if (err != ESP_OK) {
+        /* A pending prompt must be consumed before either painting it or
+         * accepting a photo that a later retry could otherwise overwrite. */
+        ESP_LOGE(TAG, "photo entry prompt could not be consumed: %s", esp_err_to_name(err));
+        manual_photo_sleep();
+        return true;
+    }
+    if (show_prompt) {
+        splash_show_message("Bluetooth photo mode",
+                            "Open Companion and press Refresh once to send a photo.");
         manual_photo_sleep();
         return true;
     }
     if (button_wake) {
         ble_setup_result_t result = ble_setup_run(BLE_SETUP_MODE_PHOTO, 10 * 60);
         if (apply_ble_result(result)) return true;
-    } else if (first_boot || s_battery_recovered) {
-        splash_show_message("Bluetooth photo mode",
-                            "Open Companion and press Refresh once to send a photo.");
     }
     manual_photo_sleep();
     return true;
@@ -2408,7 +2418,7 @@ void app_main(void)
 
 #if TESSERAE_BLE_PHOTO_ENABLED
     rest_config_load();
-    if (!maintenance_requested && run_manual_photo_mode(woke_by_button, first_boot)) return;
+    if (!maintenance_requested && run_manual_photo_mode(woke_by_button)) return;
 #endif
     ESP_ERROR_CHECK(wifi_manager_init());
     rest_config_load();
@@ -2429,7 +2439,7 @@ void app_main(void)
 
 #if TESSERAE_BLE_PHOTO_ENABLED
     /* Exiting Maintenance without selecting Automatic retains manual mode. */
-    if (run_manual_photo_mode(false, first_boot)) return;
+    if (run_manual_photo_mode(false)) return;
 #endif
 
 #if defined(BOARD_BTN_REFRESH_PIN)

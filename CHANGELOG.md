@@ -23,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   under test. Normal release targets retain OTA.
 - Manual photo sleep parks the touch controller without arming touch wake,
   including E1003's permanently powered GT911.
+- Manual photo entry instructions now use an atomically consumed one-shot NVS
+  flag, preserving retained photos after unexpected resets and battery recovery.
+  Explicit Automatic can overwrite corrupt/unreadable mode data without a
+  factory reset; Maintenance diagnostics reports read failures for recovery.
 
 ## [1.52.0] - 2026-10-21
 

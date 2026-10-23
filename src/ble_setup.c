@@ -371,6 +371,8 @@ static void send_diagnostics(auth_mode_t auth)
     uint8_t photo_key[32];
     if (ble_photo_mode_get(&manual, photo_key) == ESP_OK)
         cJSON_AddStringToObject(root, "screen_mode", manual ? "bluetooth" : "wifi");
+    else
+        cJSON_AddBoolToObject(root, "screen_mode_error", true);
     memset(photo_key, 0, sizeof photo_key);
 #endif
     cJSON_AddNumberToObject(root, "battery_mv", battery_read_mv());

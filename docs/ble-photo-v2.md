@@ -135,7 +135,7 @@ Example exact E1004 descriptor (minified size is under the 512-byte control
 message limit):
 
 ```json
-{"event":"photo_capabilities","schema":2,"kind":"seeed_reterminal_e1004","width":1200,"height":1600,"visible_width":1200,"visible_height":1600,"x_offset":0,"format":"spectra6-msb","stride":600,"bytes":960000,"chunk_bytes":384,"digest":"e4a1365bc0232bd2666dbd403055fa710ab6cbe60cf2eaa2805140a7ea5f0f3f","row_order":"top_down","lifecycle":"manual"}
+{"event":"photo_capabilities","schema":2,"kind":"seeed_reterminal_e1004","width":1200,"height":1600,"visible_width":1200,"visible_height":1600,"x_offset":0,"format":"spectra6-msb","stride":600,"bytes":960000,"chunk_bytes":384,"digest":"e4a1365bc0232bd2666dbd403055fa710ab6cbe60cf2eaa2805140a7ea5f0f3f","row_order":"top_down","lifecycle":"manual","max_window":4}
 ```
 
 Rows are top to bottom. The left pixel occupies the most significant bit(s) or
@@ -185,7 +185,14 @@ the descriptor and echoes its digest; it does not reconstruct it from a catalog.
 
 ## Transfer
 
-The first implementation is stop-and-wait, one logical packet outstanding:
+The optional `max_window` extension accepts integers 1–4. The receiver
+advertises `max_window:4`, tied to its four-command queue.
+A client may keep up to four ordered logical packets outstanding after the
+begin ACK. If the field is absent, use window 1; existing clients may continue
+stop-and-wait and ignore the extra capability. This transport limit does not
+change the canonical pixel descriptor/digest, encoded bytes, begin/end messages,
+crypto envelope or per-packet cumulative ACK shape. It is an opt-in client
+pipeline, with no new ACK batching or compression format:
 
 ```json
 {"op":"photo_begin","id":123,"schema":2,"bytes":960000,"format":"spectra6-msb","capability_digest":"<descriptor digest>","sha256":"<whole frame SHA-256>"}
@@ -198,7 +205,25 @@ must match current capabilities. Send logical binary packets to characteristic
 inside the existing BLE v2 encrypted/chunked framing. Each receives
 `photo_ack` with the next expected offset. An exact duplicate may be ACKed
 without appending; conflicting retries, future offsets, wrong IDs and out of
-bounds packets are rejected.
+bounds packets are rejected. ACK offsets are cumulative across all received
+packets, so a later ACK also confirms earlier packets whose notifications were
+lost. Send `photo_end` only after the entire frame is ACKed, never merely when
+all packets have been queued. Duplicate/stale ACKs cannot advance the sender.
+
+Companion keeps ATT writes ordered and uses writes with response as before.
+An eight-second timeout retries only the oldest unconfirmed logical packet,
+with fresh AEAD counters. The receiver answers with its current cumulative
+offset. Replaying the whole window could leave duplicate packets queued beside
+new ones after a late ACK, exceeding the queue bound. Normal progress resets
+the two-retry budget. A session disconnect still discards incomplete data.
+
+Photo events no longer incur the fixed 15 ms sleep after every notification
+fragment. NimBLE enqueue congestion instead retries for at most 100 ms per
+fragment on ENOMEM/EBUSY, yielding one scheduler tick and rechecking connection
+generation/cancellation with fresh encryption counters; other errors stop the
+event. Cumulative ACK/retry recovers a missing data ACK. Existing non-photo
+notification pacing remains. This is bounded queue handling, not a measured
+BLE throughput or energy result.
 
 ```json
 {"op":"photo_end","id":123}
@@ -215,6 +240,43 @@ matching incomplete buffer and does not paint. Short frames, failed hashes,
 cancelled and disconnected transfers cannot paint. There is no cross-connection
 resume in this version.
 
+## Window versus packed-byte RLE
+
+This iteration chooses window 4, preserving the receiver and all existing
+wire/crypto/pixel contracts. Window 8 would exceed the current command-queue
+bound; increasing it has no demonstrated benefit yet. The pipeline overlaps
+application-level ACK waits; it does **not** divide the number of packets or
+notifications by four, and ATT writes still await responses. A fourfold speedup
+cannot be inferred.
+
+A simple RLE alternative using `[count:1 byte (1..255), packed_byte:1 byte]`
+reduces flat content substantially but can double high-entropy/dithered data.
+An offline model (no compression metadata) produces:
+
+| Input | E1004 raw/RLE bytes | E1003 raw/RLE bytes |
+|---|---:|---:|
+| Flat | 960000 / 7530 | 1314144 / 10308 |
+| Existing palette bars | 960000 / 19200 | 1314144 / 67392 |
+| Deterministic valid-palette high-entropy surrogate | 960000 / 1866490 | 1314144 / 2618228 |
+
+These surrogates are not real photos. RLE is deferred: it needs explicit
+encoding negotiation, encoded versus decoded size/offset rules, bounded
+streaming decode, original-frame hashing, raw fallback and new adversarial
+coverage. Its additional protocol/code surface is unnecessary for the first
+window acceptance pass. A future RLE extension must never silently replace raw
+frames. Reproduce the counts with:
+
+```sh
+python3 tools/generate_ble_photo_fixtures.py /tmp/photo-v2-fixtures
+python3 tools/analyze_ble_photo_transport.py /tmp/photo-v2-fixtures
+```
+
+E1004 still has 2500 logical data packets and E1003 3423. In the old code, the
+fixed 15 ms delay alone accumulated to 37.500 s and 51.345 s respectively
+(excluding begin/end and fragmentation). Those are static lower-bound delay
+counts, **not measured transfer times**. Real elapsed time depends on MTU,
+connection interval, ATT writes, RSSI, phone scheduling, retries and panel work.
+
 ## Reproducible validation
 
 From the repository root:
@@ -230,9 +292,11 @@ pio run -e seeed-reterminal-e1003 -e seeed-reterminal-e1004 -e waveshare-133e6
 Host scripts use the installed ESP-IDF mbedTLS sources under
 `${PLATFORMIO_CORE_DIR:-$HOME/.platformio}`. Receiver/mode tests run with Address
 and Undefined Behavior Sanitizers. They cover retransmissions, wrong offsets and
-IDs, cancellation, bad hashes, short/oversized frames, immutable commit,
-generation isolation, a complete 4 MiB frame, NVS commit failure, key reuse,
-revocation, corrupt configuration and the post-mode-commit command gate.
+IDs, a four-packet window with lost ACKs and an oldest-packet retry,
+cancellation, bad hashes, short/oversized frames, immutable commit, generation
+isolation, a complete 4 MiB frame, NVS open/set/commit failures, one-shot prompt
+consumption, v1 migration, key reuse/revocation, corrupt/unreadable configuration
+recovery without reads, and the post-mode-commit command gate.
 Existing maintenance gesture and BLE
 crypto vectors remain covered.
 
@@ -334,6 +398,17 @@ separate acceptance steps.
   closing: both must return an error rather than an acceptance reply. Re-enter
   Maintenance and confirm those actions work and retain/revoke the photo key
   as specified.
+- With a known photo visible, power-cycle/reset after the one-shot entry prompt
+  was consumed; induce watchdog/brownout only with appropriate lab controls.
+  Confirm the instruction is not repainted. Reauthorize the same Manual mode
+  and check that it does not re-arm the prompt. A deliberate Automatic → Manual
+  transition should paint the instruction once. In Maintenance, corrupt the
+  mode blob, confirm explicit read-error diagnostics, then restore Automatic
+  without erasing network/server credentials; verify actual NVS write failures
+  remain errors. Host fault injection does not prove flash power-loss behavior.
+- Compare window 1 (older Companion) and window 4 with identical frames, MTU,
+  RSSI and connection conditions; record transfer-only time, retries, refresh
+  time and current separately. No physical speed or power result is available.
 - Test low battery, charging/recovery, practical 960 KB/1.31 MB throughput, MTU/packet
   fragmentation, RSSI/retry behavior, panel refresh current and asleep current.
 - On E1003, check the asymmetric nibble/orientation pattern and memory headroom

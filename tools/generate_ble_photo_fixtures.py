@@ -13,7 +13,7 @@ def descriptor(kind, width, height, fmt, bpp):
                 width=width, height=height, visible_width=width, visible_height=height,
                 x_offset=0, format=fmt, stride=stride, bytes=size, chunk_bytes=384,
                 digest=hashlib.sha256(canonical.encode()).hexdigest(),
-                row_order="top_down", lifecycle="manual")
+                row_order="top_down", lifecycle="manual", max_window=4)
 
 def main():
     destination = Path(sys.argv[1])

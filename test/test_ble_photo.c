@@ -52,6 +52,28 @@ int main(void)
     assert(!rx.buffer && !rx.id && !rx.generation && !rx.received && !rx.verified);
     assert(!ble_photo_append(&rx, packet, 12, 8, 1));
 
+    /* Four ordered packets can be queued before the client handles any ACK.
+     * With every ACK lost, retrying just the oldest identical packet returns
+     * rx.received for the entire window, without appending or corrupting data. */
+    uint8_t window_buffer[14], window_packet[12];
+    assert(ble_photo_begin(&rx, window_buffer, sizeof window_buffer, 9, 4));
+    be32(window_packet, 9);
+    for (size_t start = 0; start < sizeof window_buffer; start += 4) {
+        size_t n = sizeof window_buffer - start;
+        if (n > 4) n = 4;
+        be32(window_packet + 4, (uint32_t)start);
+        for (size_t i = 0; i < n; i++) window_packet[8 + i] = (uint8_t)(start + i);
+        assert(ble_photo_append(&rx, window_packet, n + 8, 4, 4));
+    }
+    assert(rx.received == sizeof window_buffer);
+    be32(window_packet + 4, 0);
+    for (size_t i = 0; i < 4; i++) window_packet[8 + i] = (uint8_t)i;
+    assert(ble_photo_append(&rx, window_packet, sizeof window_packet, 4, 4));
+    assert(rx.received == sizeof window_buffer);
+    for (size_t i = 0; i < sizeof window_buffer; i++) assert(window_buffer[i] == i);
+    assert(ble_photo_finish(&rx, sha, sha, 4));
+    ble_photo_cancel(&rx);
+
     /* Maximum supported frame, including the final short chunk.
      * The session layer computes actual SHA-256; this portable core verifies
      * the independently computed expected/actual hashes it is given. */

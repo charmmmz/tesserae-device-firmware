@@ -13,5 +13,6 @@
   "chunk_bytes": 384,
   "digest": "324dcf85431b812a6c469bd3649552b41533155ddfb2bb5f7561d5d12f7d82f6",
   "row_order": "top_down",
-  "lifecycle": "manual"
+  "lifecycle": "manual",
+  "max_window": 4
 }

@@ -85,6 +85,7 @@ static const char *TAG = "ble_setup";
 #define TESSERAE_BLE_PHOTO_ENABLED 0
 #endif
 #define PHOTO_CHUNK_BYTES 384
+#define PHOTO_WINDOW_PACKETS COMMAND_QUEUE_LEN
 #if TESSERAE_BLE_PHOTO_ENABLED && !defined(TESSERAE_BOARD_SEEED_E1004) && \
     !defined(TESSERAE_BOARD_SEEED_E1001) && !defined(TESSERAE_BOARD_SEEED_STICKY) && \
     !defined(TESSERAE_BOARD_SEEED_E1003)
@@ -282,22 +283,21 @@ static size_t event_payload_limit(auth_mode_t auth)
     return frame > overhead ? frame - overhead : 1;
 }
 
-static bool notify_frame(const uint8_t *frame, size_t len)
+static int notify_frame(const uint8_t *frame, size_t len)
 {
     /* The caller holds s_session_mutex. NimBLE invokes GAP/GATT application
      * callbacks without its host lock, so this ordering cannot invert it. */
-    if (session_cancelled()) return false;
-    if (len > sizeof s_last_event) return false;
+    if (session_cancelled()) return BLE_HS_ENOTCONN;
+    if (len > sizeof s_last_event) return BLE_HS_EMSGSIZE;
     if (s_reply_generation != atomic_load(&s_generation) ||
-        s_conn == BLE_HS_CONN_HANDLE_NONE) return false;
+        s_conn == BLE_HS_CONN_HANDLE_NONE) return BLE_HS_ENOTCONN;
     memcpy(s_last_event, frame, len);
     s_last_event_len = len;
-    if (!s_notify || s_conn == BLE_HS_CONN_HANDLE_NONE) return true;
+    if (!s_notify || s_conn == BLE_HS_CONN_HANDLE_NONE) return 0;
     struct os_mbuf *om = ble_hs_mbuf_from_flat(frame, (uint16_t)len);
-    if (!om) return false;
+    if (!om) return BLE_HS_ENOMEM;
     int rc = ble_gatts_notify_custom(s_conn, s_event_handle, om);
-    if (rc != 0) ESP_LOGW(TAG, "notify failed: %d", rc);
-    return rc == 0;
+    return rc;
 }
 
 static void send_event(auth_mode_t auth, const char *json)
@@ -324,27 +324,40 @@ static void send_event(auth_mode_t auth, const char *json)
         if (!ble_setup_chunk_encode(message_id, index, count,
                                     (const uint8_t *)json + offset, part,
                                     plain, sizeof plain, &plain_len)) return;
-        xSemaphoreTake(s_session_mutex, portMAX_DELAY);
-        if (s_reply_generation != atomic_load(&s_generation) ||
-            s_conn == BLE_HS_CONN_HANDLE_NONE) {
-            xSemaphoreGive(s_session_mutex);
-            return;
-        }
-        if (auth == AUTH_QR) {
-            if (!ble_setup_seal(&s_crypto, BLE_SETUP_DIR_DEVICE_TO_APP,
-                                plain, plain_len, frame, sizeof frame, &frame_len)) {
+        /* Backpressure only when NimBLE cannot enqueue a notification. A fixed
+         * sleep after every Photo ACK serializes an otherwise bounded window.
+         * Retries are bounded and re-sealed with fresh counters. Never hold the
+         * session mutex while waiting for NimBLE to drain its buffers. */
+        const int64_t deadline = esp_timer_get_time() + 100000;
+        for (;;) {
+            xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+            if (s_reply_generation != atomic_load(&s_generation) ||
+                s_conn == BLE_HS_CONN_HANDLE_NONE) {
                 xSemaphoreGive(s_session_mutex);
                 return;
             }
-        } else {
-            frame[0] = BLE_SETUP_FRAME_NATIVE;
-            memcpy(frame + 1, plain, plain_len);
-            frame_len = plain_len + 1;
+            if (auth == AUTH_QR) {
+                if (!ble_setup_seal(&s_crypto, BLE_SETUP_DIR_DEVICE_TO_APP,
+                                    plain, plain_len, frame, sizeof frame, &frame_len)) {
+                    xSemaphoreGive(s_session_mutex);
+                    return;
+                }
+            } else {
+                frame[0] = BLE_SETUP_FRAME_NATIVE;
+                memcpy(frame + 1, plain, plain_len);
+                frame_len = plain_len + 1;
+            }
+            int rc = notify_frame(frame, frame_len);
+            xSemaphoreGive(s_session_mutex);
+            if (rc == 0) break;
+            if ((rc != BLE_HS_ENOMEM && rc != BLE_HS_EBUSY) ||
+                esp_timer_get_time() >= deadline) {
+                ESP_LOGW(TAG, "notify failed: %d", rc);
+                return; /* cumulative ACK/retry recovers a lost Photo event */
+            }
+            vTaskDelay(1);
         }
-        bool notified = notify_frame(frame, frame_len);
-        xSemaphoreGive(s_session_mutex);
-        if (!notified) return;
-        vTaskDelay(pdMS_TO_TICKS(15));
+        if (s_mode != BLE_SETUP_MODE_PHOTO) vTaskDelay(pdMS_TO_TICKS(15));
     }
 }
 
@@ -597,10 +610,10 @@ static bool prepare_photo_capabilities(void)
                  "\"width\":%u,\"height\":%u,\"visible_width\":%u,\"visible_height\":%u,"
                  "\"x_offset\":0,\"format\":\"%s\",\"stride\":%u,\"bytes\":%u,"
                  "\"chunk_bytes\":384,\"digest\":\"%s\",\"row_order\":\"top_down\","
-                 "\"lifecycle\":\"manual\"}",
+                 "\"lifecycle\":\"manual\",\"max_window\":%u}",
                  TESSERAE_DEVICE_KIND, info->width, info->height, info->width,
                  info->height, s_photo_format, (unsigned)stride,
-                 (unsigned)info->buf_bytes, s_photo_digest);
+                 (unsigned)info->buf_bytes, s_photo_digest, (unsigned)PHOTO_WINDOW_PACKETS);
     return n > 0 && (size_t)n <= BLE_SETUP_MESSAGE_MAX;
 }
 
@@ -911,6 +924,10 @@ static int accept_frame(auth_mode_t auth, struct os_mbuf *om, bool binary)
             return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
         reassembly = &s_qr_reassembly;
     } else {
+        /* Defense in depth for the native-passkey path: GATT WRITE_ENC |
+         * WRITE_AUTHEN already enforces this today. Keep the check at the
+         * shared reassembly boundary so a future characteristic/flag change
+         * cannot accidentally admit unauthenticated maintenance commands. */
         struct ble_gap_conn_desc connection;
         if (s_conn == BLE_HS_CONN_HANDLE_NONE ||
             ble_gap_conn_find(s_conn, &connection) != 0 ||
